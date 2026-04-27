@@ -1,0 +1,123 @@
+name: Ultimate-Asset-Extractor
+
+on:
+  push:
+    paths:
+      - 'input/**' # inputフォルダに何かが入ったら発動
+  workflow_dispatch: # 手動ポチでも起動可能！
+
+jobs:
+  build-and-extract:
+    runs-on: windows-latest
+    
+    # リポジトリへの書き込み権限を付与
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Setup NuGet
+        uses: nuget/setup-nuget@v1
+
+      - name: Restore NuGet Packages
+        run: nuget restore AssetStudio.sln
+
+      # --- 1. まずは「武器（CLIツール）」を練成する ---
+      - name: Build AssetStudioCLI & Native Libs
+        run: |
+          echo "::group::Building AssetStudio Tools"
+          # ネイティブDLL（画像解析用）のビルド
+          msbuild AssetStudio.sln /t:Texture2DDecoderNative /p:Configuration=Release /p:Platform=x64
+          
+          # CLI本体のビルド
+          msbuild AssetStudio.sln /t:AssetStudioCLI /p:Configuration=Release /p:TargetFramework=net6.0 /verbosity:minimal
+          
+          # 修復プロトコル：期待される場所へファイルを強制コピー
+          $cliBin = "AssetStudioCLI\bin\Release\net6.0"
+          $nativeDll = "Texture2DDecoderNative\bin\x64\Release\Texture2DDecoderNative.dll"
+          if (!(Test-Path $cliBin)) { mkdir $cliBin }
+          Copy-Item $nativeDll -Destination (Join-Path $cliBin "Texture2DDecoderNative.dll") -Force
+          echo "::endgroup::"
+
+      # --- 2. 「無限マトリョーシカ解体・抽出」フェーズ ---
+      - name: Recursive Unpack and Extract
+        run: |
+          $cliPath = "AssetStudioCLI\bin\Release\net6.0\AssetStudioModCLI.exe"
+          $finalOutputDir = "output_final"
+          if (!(Test-Path $finalOutputDir)) { mkdir $finalOutputDir }
+
+          # inputフォルダ内の全ファイルを対象にする
+          Get-ChildItem "input/*" | ForEach-Object {
+              $fileName = $_.BaseName
+              $workDir = "workspace_$fileName"
+              $extractedAssetsDir = "results/$fileName"
+              mkdir $workDir -Force
+              
+              echo "::group:: 🕵️ Deep-Diving: $($_.Name) "
+              Copy-Item $_.FullName $workDir
+
+              # 無限解凍ループ：解凍できるものがなくなるまで剥き続ける
+              $foundNewArchive = $true
+              while ($foundNewArchive) {
+                  $foundNewArchive = $false
+                  # zip, apk, apks, ipa, jar, 等をすべてターゲット
+                  Get-ChildItem -Path $workDir -Recurse | Where-Object { $_.Extension -match "\.(zip|apk|apks|ipa|jar)$" } | ForEach-Object {
+                      $targetZip = $_.FullName
+                      $destDir = Join-Path $_.DirectoryName $_.BaseName
+                      
+                      echo "[UNPACK] Expanding: $($_.Name)"
+                      try {
+                          Expand-Archive -Path $targetZip -DestinationPath $destDir -Force -ErrorAction SilentlyContinue
+                          Remove-Item $targetZip -Force # 解凍済みは削除してループ重複を避ける
+                          $foundNewArchive = $true
+                      } catch {
+                          echo "[SKIP] Could not unpack $($_.Name)"
+                      }
+                  }
+              }
+
+              # 全階層を再帰的にスキャンしてUnityアセットを抽出
+              echo "[SCAN] Extracting Unity assets..."
+              Get-ChildItem -Path $workDir -Recurse | Where-Object { ! $_.PSIsContainer } | ForEach-Object {
+                  $item = $_.FullName
+                  # Unity関連の拡張子、または拡張子なしを全部放り込む！
+                  if ($_.Extension -match "\.(unity3d|assets|bundle|resource|resS)$" -or $_.Extension -eq "") {
+                      $relPath = Resolve-Path $_.FullName -Relative $workDir
+                      $outputSubDir = Join-Path $extractedAssetsDir ([System.IO.Path]::GetDirectoryName($relPath))
+                      
+                      # AssetStudio実行（テクスチャ、メッシュ、テキストを抽出）
+                      & $cliPath $item -t tex2d,mesh,textasset -o $outputSubDir 2>$null
+                  }
+              }
+
+              # 成果物があればzip化
+              if (Test-Path $extractedAssetsDir) {
+                  Compress-Archive -Path "$extractedAssetsDir/*" -DestinationPath "$finalOutputDir/$($fileName)_C.zip" -Force
+                  echo "[SUCCESS] Finished: $($fileName)_C.zip"
+              }
+              echo "::endgroup::"
+          }
+
+      # --- 3. 成果物をリポジトリにプッシュ ---
+      - name: Push Results to Repository
+        run: |
+          git config --global user.name "Gemini-Programming-Bot"
+          git config --global user.email "bot@gemini.隊"
+          git add output_final/*.zip
+          # 変更がある場合のみコミット
+          $status = git status --porcelain
+          if ($status) {
+              git commit -m "chore: 📦 自動抽出完了 [$(get-date -Format 'yyyy-MM-dd HH:mm')]"
+              git push
+          } else {
+              echo "No changes to commit."
+          }
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
