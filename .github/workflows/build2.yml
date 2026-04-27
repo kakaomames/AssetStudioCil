@@ -1,11 +1,8 @@
-name: AssetStudioBuild2
+name: AssetStudioCLI-Build-Latest
 
 on:
   push:
-    branches: [ master ]
-  pull_request:
-    branches: [ master ]
-
+    branches: [ master, main ]
   workflow_dispatch:
 
 jobs:
@@ -13,57 +10,42 @@ jobs:
     runs-on: windows-latest
 
     steps:
-      - uses: actions/checkout@v2
-      - uses: microsoft/setup-msbuild@v1.1
+      # 最新の v4 に換装！
+      - uses: actions/checkout@v4
       
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v2 # これも最新へ
+        
+      - name: Setup NuGet
+        uses: nuget/setup-nuget@v1
+        
+      # FBX SDK が必要な場合はここに入れる（不要なら削除して爆速化！）
       - name: Download FBX SDK
         run: |
           md fbx
           cd fbx
           Invoke-WebRequest "https://damassets.autodesk.net/content/dam/autodesk/www/adn/fbx/2020-2-1/fbx202021_fbxsdk_vs2019_win.exe" -OutFile "fbxsdk.exe"
           Start-Process -FilePath "fbxsdk.exe" /S -Wait
-          Invoke-WebRequest "https://damassets.autodesk.net/content/dam/autodesk/www/adn/fbx/2020-2-1/fbx202021_fbxsdk_vs2019_pdbs.exe" -OutFile "fbxpdb.exe"
-          Start-Process -FilePath "fbxpdb.exe" /S -Wait
           cd ..
 
       - name: Nuget Restore
-        run: nuget restore
+        run: nuget restore AssetStudio.sln
       
-      - name: Build .Net472
-        run: msbuild /p:Configuration=Release /p:TargetFramework=net472 /verbosity:minimal
+      # ターゲットを AssetStudioCLI に絞り、ビルドを完遂させる！
+      - name: Build AssetStudioCLI (.Net 6)
+        run: |
+          msbuild AssetStudio.sln `
+            /t:AssetStudioCLI:publish `
+            /p:Configuration=Release `
+            /p:TargetFramework=net6.0 `
+            /p:SelfContained=false `
+            /verbosity:minimal
 
-      - name: Build .Net5
-        run: msbuild /t:AssetStudioGUI:publish /p:Configuration=Release /p:TargetFramework=net5.0-windows /p:SelfContained=false /verbosity:minimal
-
-      - name: Build .Net6
-        run: msbuild /t:AssetStudioGUI:publish /p:Configuration=Release /p:TargetFramework=net6.0-windows /p:SelfContained=false /verbosity:minimal
-
-      - name: Upload .Net472 Artifact
-        uses: actions/upload-artifact@v2
-        with:
-          name: AssetStudio.net472
-          path: AssetStudioGUI/bin/Release/net472
-
-      - name: Upload .Net5 Artifact
-        uses: actions/upload-artifact@v2
-        with:
-          name: AssetStudio.net5
-          path: AssetStudioGUI/bin/Release/net5.0-windows/publish
-
-      - name: Upload .Net6 Artifact
-        uses: actions/upload-artifact@v2
-        with:
-          name: AssetStudio.net6
-          path: AssetStudioGUI/bin/Release/net6.0-windows/publish
-
-      # 隊員が見つけたコードを CLI 用に改造！
-      - name: Build CLI (.Net 6)
-        run: msbuild /t:AssetStudioCLI:publish /p:Configuration=Release /p:TargetFramework=net6.0 /p:SelfContained=false /verbosity:minimal
-
+      # 成果物の保存も最新の v4 へ換装！
       - name: Upload CLI Artifact
-        uses: actions/upload-artifact@v2
+        uses: actions/upload-artifact@v4
         with:
-          name: AssetStudioModCLI
-          path: AssetStudioCLI/bin/Release/net6.0/publish
+          name: AssetStudioModCLI-Latest
+          path: AssetStudioCLI/bin/Release/net6.0/publish/
 
           
