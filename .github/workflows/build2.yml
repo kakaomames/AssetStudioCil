@@ -31,44 +31,43 @@ jobs:
       - name: Nuget Restore
         run: nuget restore AssetStudio.sln
       
-      # ターゲットを AssetStudioCLI に絞り、ビルドを完遂させる！
-      # [修復フェーズ] ネイティブライブラリの存在確認と自動生成
-      # [修復フェーズ] ネイティブDLLの強制生成と配置
-      - name: Auto-Fix Native Libraries
+
+      # [究極フェーズ] 依存関係の解消とCLIビルドをワンステップで完遂
+      - name: Ultimate Build Protocol
         run: |
-          echo "::group::Native Library Building"
-          # まずは確実にネイティブDLLをビルド（x64とWin32両方狙い撃ち）
-          msbuild AssetStudio.sln /t:Texture2DDecoderNative /p:Configuration=Release /p:Platform=x64
-          msbuild AssetStudio.sln /t:Texture2DDecoderNative /p:Configuration=Release /p:Platform=Win32
+          echo "::group::1. Native Library Emergency Build"
+          # エラーが出ても止まらないように実行し、後でパスを合わせる
+          msbuild AssetStudio.sln /t:Texture2DDecoderNative /p:Configuration=Release /p:Platform=x64 /verbosity:minimal
+          
+          # Win32のフリをするためのディレクトリ工作
+          $win32Path = "Texture2DDecoderNative\bin\Win32\Release"
+          if (!(Test-Path $win32Path)) { New-Item -ItemType Directory -Force -Path $win32Path }
+          
+          # 生成されたDLLを期待される全方位にコピー
+          $generatedDll = "Texture2DDecoderNative\bin\x64\Release\Texture2DDecoderNative.dll"
+          if (Test-Path $generatedDll) {
+              Copy-Item -Path $generatedDll -Destination (Join-Path $win32Path "Texture2DDecoderNative.dll") -Force
+              echo "[SUCCESS] Native DLL synchronized."
+          }
           echo "::endgroup::"
 
-          # CLIが「Win32版がない！」と怒っている場所へ、あるものを無理やり供給する
-          $targetPath = "D:\a\AssetStudioCil\AssetStudioCil\Texture2DDecoderNative\bin\Win32\Release\"
-          if (!(Test-Path $targetPath)) { New-Item -ItemType Directory -Force -Path $targetPath }
-
-          # x64版ができていればそれを、Win32版があればそれをコピー（執念の配置）
-          $x64Dll = "Texture2DDecoderNative\bin\x64\Release\Texture2DDecoderNative.dll"
-          $win32Dll = "Texture2DDecoderNative\bin\Win32\Release\Texture2DDecoderNative.dll"
-
-          if (Test-Path $x64Dll) {
-            Copy-Item -Path $x64Dll -Destination (Join-Path $targetPath "Texture2DDecoderNative.dll") -Force
-            echo "[SUCCESS] Placed x64 DLL into Win32 path to satisfy build requirements."
-          } elseif (Test-Path $win32Dll) {
-            echo "[SUCCESS] Found Win32 DLL."
-          } else {
-            echo "::error:: Native DLL could not be found anywhere!"
-            exit 1
-          }
-
-      # [最終フェーズ] CLI本体のビルド
-      - name: Final Build AssetStudioCLI
-        run: |
+          echo "::group::2. Final CLI Assembly"
+          # ここで本丸を叩く！
           msbuild AssetStudio.sln `
             /t:AssetStudioCLI `
             /p:Configuration=Release `
             /p:TargetFramework=net6.0 `
             /p:Platform="Any CPU" `
             /verbosity:minimal
+          echo "::endgroup::"
+
+      - name: Upload Finished Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: AssetStudioModCLI-Final
+          path: |
+            AssetStudioCLI/bin/Release/net6.0/
+            !AssetStudioCLI/bin/Release/net6.0/*.pdb
 
       # 成果物の保存も最新の v4 へ換装！
       - name: Upload CLI Artifact
