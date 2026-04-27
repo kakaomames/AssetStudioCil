@@ -32,13 +32,34 @@ jobs:
         run: nuget restore AssetStudio.sln
       
       # ターゲットを AssetStudioCLI に絞り、ビルドを完遂させる！
-      - name: Build AssetStudioCLI (.Net 6)
+      # [修復フェーズ] ネイティブライブラリの存在確認と自動生成
+      - name: Auto-Detect and Build Native Libraries
+        run: |
+          $nativeDll = "Texture2DDecoderNative\bin\x64\Release\Texture2DDecoderNative.dll"
+          if (!(Test-Path $nativeDll)) {
+            echo "::warning:: [DETECTED] Native DLL is missing. Starting emergency build..."
+            msbuild AssetStudio.sln /t:Texture2DDecoderNative /p:Configuration=Release /p:Platform=x64
+          } else {
+            echo "[OK] Native DLL already exists."
+          }
+
+      # [配置フェーズ] CLIが期待する場所へファイルを強制コピー
+      - name: Manual Library Placement
+        run: |
+          $source = "Texture2DDecoderNative\bin\x64\Release\Texture2DDecoderNative.dll"
+          $dest = "AssetStudioCLI\bin\Release\net6.0\"
+          if (!(Test-Path $dest)) { New-Item -ItemType Directory -Force -Path $dest }
+          Copy-Item -Path $source -Destination $dest -Force
+          echo "[ACTION] Native DLL has been force-placed into CLI directory."
+
+      # [最終ビルド] CLI本体のビルド
+      - name: Final Build AssetStudioCLI
         run: |
           msbuild AssetStudio.sln `
-            /t:AssetStudioCLI:publish `
+            /t:AssetStudioCLI `
             /p:Configuration=Release `
             /p:TargetFramework=net6.0 `
-            /p:SelfContained=false `
+            /p:Platform="Any CPU" `
             /verbosity:minimal
 
       # 成果物の保存も最新の v4 へ換装！
